@@ -1,0 +1,61 @@
+// VoltageControl: Phoenix 6 style motor control for FTC, in volts.
+//
+// Matches the FTC SDK's own build: Android Gradle Plugin 8.13.2, compile SDK 30, min SDK 24, Java 8.
+// The FTC SDK is compileOnly, so teams build against the SDK version they already have and this
+// library never bundles a second copy of it.
+
+plugins {
+    id 'com.android.library' version '8.13.2'
+    id 'maven-publish'
+}
+
+group = 'com.github.davidsigreat'
+version = '0.1.0'
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+android {
+    namespace = 'io.github.davidsigreat.voltagecontrol'
+    compileSdk = 30
+
+    defaultConfig {
+        minSdk = 24
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }
+
+    publishing {
+        singleVariant('release') {
+            withSourcesJar()
+        }
+    }
+}
+
+dependencies {
+    compileOnly 'org.firstinspires.ftc:RobotCore:12.0.0'
+    compileOnly 'org.firstinspires.ftc:Hardware:12.0.0'
+
+    // The tests only cover the plain Java classes, which don't touch the SDK.
+    testImplementation 'junit:junit:4.13.2'
+}
+
+// For JitPack: builds the release AAR with sources, so teams can add
+//   implementation 'com.github.davidsigreat:VoltageControl:<tag>'
+afterEvaluate {
+    publishing {
+        publications {
+            release(MavenPublication) {
+                from components.release
+                groupId = project.group
+                artifactId = 'VoltageControl'
+                version = project.version
+            }
+        }
+    }
+}
