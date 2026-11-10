@@ -6,4 +6,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = 'VoltageControl'
+rootProject.name = 'Volta'

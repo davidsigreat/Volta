@@ -8,4 +8,5 @@ First version, extracted from FTC 22536 BIOBUZZ's 2026 robot code.
 - `PIDSVAController` and `PIDSVAGains`: kS/kV/kA/kG feedforward and PID feedback in volts, with elevator and arm cosine gravity, velocity or error kS sign, integral zone and cap, and a filtered derivative.
 - `TrapezoidProfile` and `MotionMagicConfig`: Motion Magic profiles that restart cleanly when the goal changes.
 - `SlewRateLimiter` and `BatteryVoltage`.
+- Javadoc on every public class, method and field, and guides in `docs/`.
 - Unit tests for the controller, profile and ramp.

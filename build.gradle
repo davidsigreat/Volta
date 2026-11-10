@@ -1,4 +1,4 @@
-// VoltageControl: Phoenix 6 style motor control for FTC, in volts.
+// Volta: voltage-compensated motor control for FTC.
 //
 // Matches the FTC SDK's own build: Android Gradle Plugin 8.13.2, compile SDK 30, min SDK 24, Java 8.
 // The FTC SDK is compileOnly, so teams build against the SDK version they already have and this
@@ -18,7 +18,7 @@ repositories {
 }
 
 android {
-    namespace = 'io.github.davidsigreat.voltagecontrol'
+    namespace = 'io.github.davidsigreat.volta'
     compileSdk = 30
 
     defaultConfig {
@@ -46,14 +46,14 @@ dependencies {
 }
 
 // For JitPack: builds the release AAR with sources, so teams can add
-//   implementation 'com.github.davidsigreat:VoltageControl:<tag>'
+//   implementation 'com.github.davidsigreat:Volta:<tag>'
 afterEvaluate {
     publishing {
         publications {
             release(MavenPublication) {
                 from components.release
                 groupId = project.group
-                artifactId = 'VoltageControl'
+                artifactId = 'Volta'
                 version = project.version
             }
         }

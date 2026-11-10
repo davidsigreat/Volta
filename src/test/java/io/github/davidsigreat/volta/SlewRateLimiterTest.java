@@ -1,4 +1,4 @@
-package io.github.davidsigreat.voltagecontrol;
+package io.github.davidsigreat.volta;
 
 import static org.junit.Assert.assertEquals;
 

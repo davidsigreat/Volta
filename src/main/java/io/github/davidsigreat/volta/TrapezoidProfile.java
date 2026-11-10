@@ -1,23 +1,30 @@
-package io.github.davidsigreat.voltagecontrol;
+package io.github.davidsigreat.volta;
 
-// The motion behind Motion Magic: speed up at a fixed acceleration to the cruise velocity, cruise,
-// then slow down to stop exactly on the goal. Short moves never reach cruise and make a triangle.
-//
-// Use it one step at a time, from the last setpoint, the way Motion Magic does:
-//     step(dt, setpoint, goal, maxVelocity, maxAcceleration, setpoint);
-// Starting from the last setpoint, not the measured position, keeps the motion smooth. Because it's
-// worked out fresh each step, the goal can change mid-move and it carries on from where it is.
-//
-// The same algorithm as WPILib's TrapezoidProfile. No jerk limit (Phoenix's S-curve): at FTC loop
-// rates the difference is small, and the trapezoid is simpler to reason about. Plain Java, so it can
-// be tested without a robot. Writes into an existing State, so it makes no garbage each loop.
+/**
+ * The motion behind Motion Magic: speed up at a fixed acceleration to the cruise velocity, cruise,
+ * then slow down to stop exactly on the goal. Short moves never reach cruise and make a triangle.
+ * <p>
+ * Use it one step at a time, from the last setpoint, the way Motion Magic does:
+ * <pre>
+ *     step(dt, setpoint, goal, maxVelocity, maxAcceleration, setpoint);
+ * </pre>
+ * Starting from the last setpoint, not the measured position, keeps the motion smooth. Because it's
+ * worked out fresh each step, the goal can change mid-move and it carries on from where it is.
+ * <p>
+ * The same algorithm as WPILib's TrapezoidProfile. No jerk limit (S-curve): at FTC loop
+ * rates the difference is small, and the trapezoid is simpler to reason about. Plain Java, so it can
+ * be tested without a robot. Writes into an existing State, so it makes no garbage each loop.
+ */
 public class TrapezoidProfile {
 
+    /** A point on a profile. Mutable, so one can be reused every loop. */
     public static class State {
         public double position;
         public double velocity;
+        /** Set by step(): the acceleration the profile is using at this point, for kA. */
         public double acceleration;
 
+        /** All zero. */
         public State() {
         }
 
@@ -26,6 +33,7 @@ public class TrapezoidProfile {
             this.velocity = velocity;
         }
 
+        /** Sets all three fields. */
         public void set(double position, double velocity, double acceleration) {
             this.position = position;
             this.velocity = velocity;
@@ -36,8 +44,10 @@ public class TrapezoidProfile {
     private TrapezoidProfile() {
     }
 
-    // Where the motion is t seconds after current, heading for goal. Writes into out, which can be
-    // the same object as current. With no limits (0 or less), it jumps straight to the goal.
+    /**
+     * Where the motion is t seconds after current, heading for goal. Writes into out, which can be
+     * the same object as current. With no limits (0 or less), it jumps straight to the goal.
+     */
     public static void step(double t, State current, State goal, double maxVelocity, double maxAcceleration,
                             State out) {
         if (maxVelocity <= 0 || maxAcceleration <= 0) {
@@ -101,7 +111,9 @@ public class TrapezoidProfile {
         out.set(position * direction, velocity * direction, acceleration * direction);
     }
 
-    // Whether the setpoint has reached the goal and stopped.
+    /**
+     * Whether the setpoint has reached the goal and stopped.
+     */
     public static boolean isFinished(State setpoint, State goal) {
         return setpoint.position == goal.position && setpoint.velocity == goal.velocity;
     }
