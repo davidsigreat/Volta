@@ -3,90 +3,52 @@ package io.github.davidsigreat.volta;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 
+import io.github.davidsigreat.volta.configs.MotorOutputConfig;
+import io.github.davidsigreat.volta.configs.NeutralMode;
+import io.github.davidsigreat.volta.configs.SoftLimitConfig;
+import io.github.davidsigreat.volta.configs.VoltageMotorConfig;
+import io.github.davidsigreat.volta.controls.ControlMode;
+import io.github.davidsigreat.volta.controls.ControlRequest;
+
 /**
- * One mechanism's motors and the control that drives them. Pick a control with a set method, and
- * call update() once per loop to run it:
+ * One mechanism's motors and the control that drives them. Give it a control request with set(),
+ * and call update() once per loop to run it:
  * <pre>
- *   setDutyCycle(power)                              fraction of the battery
- *   setVoltage(volts)                                open loop volts
- *   setVelocity(velocity)                            hold a velocity
- *   setMotionMagicVelocity(velocity, acceleration)   ramp to a velocity
- *   setPosition(position)                            hold a position
- *   setMotionMagic(position)                         profiled move, limits from motionMagic
- *   neutral() / coast() / brake()                    no output
+ *   VoltageMotor lift = new VoltageMotor(battery, LIFT_CONFIG, leftMotor, rightMotor);
+ *   MotionMagicVoltage liftRequest = new MotionMagicVoltage(0);
+ *
+ *   // loop()
+ *   lift.set(liftRequest.withPosition(28));
+ *   lift.update();
  * </pre>
- * Every motor passed in after the first follows it.
+ * The requests are DutyCycleOut, VoltageOut, VelocityVoltage, MotionMagicVelocityVoltage,
+ * PositionVoltage, MotionMagicVoltage, NeutralOut, CoastOut and StaticBrake, in the controls
+ * package. How the motor runs (gains, units, limits) is its VoltageMotorConfig.
  * <p>
- * Set methods only choose the control, so call them as often as you like; update() does the work.
- * The first motor is the leader: its encoder is the one read, so it must be the one with an encoder
- * cable. Followers get the same power. Set each motor's direction before passing it in, so they all
- * turn the mechanism the same way.
+ * set() only records the request, so call it as often as you like; update() does the work. The
+ * first motor is the leader: its encoder is the one read, so it must be the one with an encoder
+ * cable. Every motor after it follows with the same power. Set each motor's direction before
+ * passing it in, so they all turn the mechanism the same way.
  * <p>
- * Closed loop control runs here in the OpMode loop, in volts through BatteryVoltage, using
- * PIDSVAController. Turn on bulk caching (MANUAL, cleared each loop) so the encoder reads are free.
+ * Turn on bulk caching (MANUAL, cleared each loop) so the encoder reads are free.
  */
 public class VoltageMotor {
-
-    /** The control a VoltageMotor is running, one per set method. */
-    public enum Mode {
-        NEUTRAL, DUTY_CYCLE, VOLTAGE, VELOCITY, MOTION_MAGIC_VELOCITY, POSITION, MOTION_MAGIC
-    }
 
     private final DcMotorEx[] motors;
     private final BatteryVoltage battery;
     private final PIDSVAController controller;
+    private VoltageMotorConfig config;
     private long lastUpdateNanos = System.nanoTime();
 
-    // Settings. Public so they can be set once after construction, or live each loop.
-
-    /**
-     * Encoder ticks to position units: position = ticks * positionPerTick. Inches per tick for a
-     * lift, degrees per tick for an arm.
-     */
-    public double positionPerTick = 1;
-    /**
-     * Encoder ticks per second to velocity units: velocity = ticks per second *
-     * velocityPerTickPerSecond. NaN (the default) uses positionPerTick, so velocity is position
-     * units per second. For a flywheel in RPM, use 60 / ticksPerRev.
-     */
-    public double velocityPerTickPerSecond = Double.NaN;
-    /**
-     * What neutral() does: BRAKE or FLOAT.
-     */
-    public DcMotor.ZeroPowerBehavior neutralMode = DcMotor.ZeroPowerBehavior.BRAKE;
-    /** The most forward volts the motors get. */
-    public double peakForwardVolts = Double.POSITIVE_INFINITY;
-    /**
-     * The most reverse volts the motors get, as a negative number. 0 for a flywheel that should
-     * coast down, not be driven backwards.
-     */
-    public double peakReverseVolts = Double.NEGATIVE_INFINITY;
-    /** At or past this position, forward output is cut. In position units. */
-    public double forwardSoftLimit = Double.POSITIVE_INFINITY;
-    /** At or past this position, reverse output is cut. In position units. */
-    public double reverseSoftLimit = Double.NEGATIVE_INFINITY;
-    /**
-     * Power changes smaller than this aren't sent, since each write costs loop time. Stopping and
-     * full power always go through.
-     */
-    public double powerDeadband = 0.002;
-    /**
-     * The longest loop time the control will use, in seconds. The first loop's includes all of init.
-     */
-    public double maxLoopSeconds = 0.1;
-    /**
-     * Motion Magic limits. Point it at one in a Panels @Configurable or FTC Dashboard @Config class to tune it live.
-     */
-    public MotionMagicConfig motionMagic = new MotionMagicConfig();
-
-    private Mode mode = Mode.NEUTRAL;
-    private boolean modeChanged = true;
-    private DcMotor.ZeroPowerBehavior neutralRequest = null;
-    private DcMotor.ZeroPowerBehavior appliedZeroPower = null;
-    private double demand = 0;
+    // The request, copied out of the last set() so the request object can be reused.
+    private ControlMode mode = ControlMode.NEUTRAL;
+    private int slot = 0;
+    private boolean restart = true;
     private double target = 0;
-    private double rampAcceleration = 0;
+    private double feedforwardVelocity = 0;
+    private double requestAcceleration = 0;
 
+    private DcMotor.ZeroPowerBehavior appliedZeroPower = null;
     private final SlewRateLimiter velocityRamp = new SlewRateLimiter(0, 0);
     private final TrapezoidProfile.State profileSetpoint = new TrapezoidProfile.State();
     private final TrapezoidProfile.State profileGoal = new TrapezoidProfile.State();
@@ -102,189 +64,165 @@ public class VoltageMotor {
      * runs here; the encoder still reads.
      *
      * @param battery   the battery reading to compensate with; can be shared between mechanisms
-     * @param gains     the gains, read every loop, so a Panels or Dashboard field can be tuned live
+     * @param config    how the motor runs; read every loop, so it can be tuned live
      * @param leader    the motor whose encoder is read
      * @param followers motors that get the same power as the leader
      */
-    public VoltageMotor(BatteryVoltage battery, PIDSVAGains gains, DcMotorEx leader, DcMotorEx... followers) {
+    public VoltageMotor(BatteryVoltage battery, VoltageMotorConfig config, DcMotorEx leader, DcMotorEx... followers) {
         this.battery = battery;
-        this.controller = new PIDSVAController(gains);
+        this.config = config;
+        this.controller = new PIDSVAController(config.slot0, config.closedLoop);
         motors = new DcMotorEx[followers.length + 1];
         motors[0] = leader;
         System.arraycopy(followers, 0, motors, 1, followers.length);
         for (DcMotorEx motor : motors) {
-            // The loop runs here, so the hub's own loop stays off. The encoder still reads.
             motor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
         }
     }
 
-    // ---- Controls ----
-
-    /**
-     * DutyCycleOut: a fraction of the battery, -1 to 1. No voltage compensation.
-     */
-    public void setDutyCycle(double newPower) {
-        select(Mode.DUTY_CYCLE);
-        demand = newPower;
+    /** Makes a mechanism with a default configuration: no gains, 1 position unit per tick. */
+    public VoltageMotor(BatteryVoltage battery, DcMotorEx leader, DcMotorEx... followers) {
+        this(battery, new VoltageMotorConfig(), leader, followers);
     }
 
-    /**
-     * VoltageOut: open loop volts, the same on any battery.
-     */
-    public void setVoltage(double newVolts) {
-        select(Mode.VOLTAGE);
-        demand = newVolts;
+    // ---- Configuration ----
+
+    /** Switches to another configuration. Takes effect on the next update(), starting fresh. */
+    public void apply(VoltageMotorConfig newConfig) {
+        config = newConfig;
+        restart = true;
     }
 
-    /**
-     * VelocityVoltage: holds a velocity, jumping straight to it.
-     */
-    public void setVelocity(double targetVelocity) {
-        select(Mode.VELOCITY);
-        target = targetVelocity;
+    /** The configuration in use. Edit its fields to change how the motor runs, live. */
+    public VoltageMotorConfig getConfig() {
+        return config;
     }
 
-    /**
-     * MotionMagicVelocityVoltage: ramps to a velocity at the given acceleration (units per second
-     * per second), starting from the real speed, with kA covering the ramp.
-     */
-    public void setMotionMagicVelocity(double targetVelocity, double acceleration) {
-        select(Mode.MOTION_MAGIC_VELOCITY);
-        target = targetVelocity;
-        rampAcceleration = acceleration;
-    }
+    // ---- Control ----
 
     /**
-     * PositionVoltage: holds a position, jumping straight to it.
+     * Runs a control request from the next update() on. The values are copied, so the request
+     * object can be changed and set again each loop.
+     * <p>
+     * Changing to a different control or slot starts fresh from where the mechanism is: the
+     * integral and derivative are cleared, and ramps and profiles start at the measured position
+     * and velocity. Changing only the target carries on smoothly.
      */
-    public void setPosition(double targetPosition) {
-        select(Mode.POSITION);
-        target = targetPosition;
-    }
-
-    /**
-     * MotionMagicVoltage: moves to a position along a trapezoid profile with motionMagic's limits.
-     * The goal can change mid-move.
-     */
-    public void setMotionMagic(double targetPosition) {
-        select(Mode.MOTION_MAGIC);
-        target = targetPosition;
-    }
-
-    /**
-     * NeutralOut: no output, coasting or braking as neutralMode says.
-     */
-    public void neutral() {
-        select(Mode.NEUTRAL);
-        neutralRequest = null;
-    }
-
-    /**
-     * CoastOut: no output, spinning freely.
-     */
-    public void coast() {
-        select(Mode.NEUTRAL);
-        neutralRequest = DcMotor.ZeroPowerBehavior.FLOAT;
-    }
-
-    /**
-     * StaticBrake: no output, motor leads shorted so it resists turning.
-     */
-    public void brake() {
-        select(Mode.NEUTRAL);
-        neutralRequest = DcMotor.ZeroPowerBehavior.BRAKE;
-    }
-
-    private void select(Mode newMode) {
-        if (newMode != mode) {
+    public void set(ControlRequest request) {
+        ControlMode newMode = request.getControlMode();
+        int newSlot = request.getSlot();
+        if (newMode != mode || newSlot != slot) {
+            config.getSlot(newSlot); // fails here, not in update(), for a bad slot number
             mode = newMode;
-            modeChanged = true;
+            slot = newSlot;
+            restart = true;
         }
+        target = request.getValue();
+        feedforwardVelocity = request.getFeedforwardVelocity();
+        requestAcceleration = request.getAcceleration();
     }
 
     // ---- Loop ----
 
-    /**
-     * Call once per loop: reads the encoder, runs the chosen control, and writes the motors.
-     */
+    /** Call once per loop: reads the encoder, runs the control, and writes the motors. */
     public void update() {
+        VoltageMotorConfig c = config;
         long now = System.nanoTime();
-        double dt = Math.min((now - lastUpdateNanos) * 1e-9, maxLoopSeconds);
+        double dt = Math.min((now - lastUpdateNanos) * 1e-9, c.maxLoopSeconds);
         lastUpdateNanos = now;
-        readEncoder();
+        readEncoder(c);
+        controller.setSlot(c.getSlot(slot));
+        controller.setClosedLoop(c.closedLoop);
 
-        if (modeChanged) {
-            // Start fresh from where the mechanism really is, with no leftover error.
-            modeChanged = false;
+        if (restart) {
+            restart = false;
             controller.reset();
             velocityRamp.reset(velocity);
             profileSetpoint.set(position, velocity, 0);
         }
 
+        MotorOutputConfig output = c.motorOutput;
         switch (mode) {
             case DUTY_CYCLE:
-                setZeroPower(neutralMode);
-                volts = demand * battery.get();
-                writePower(limitPower(demand));
+                setZeroPower(zeroPower(output.neutralMode));
+                volts = target * battery.get();
+                writePower(limitPower(target, c), output);
                 return;
             case VOLTAGE:
-                outputVolts(demand);
+                outputVolts(target, c);
                 return;
             case VELOCITY:
-                outputVolts(controller.calculate(target, velocity, target, 0, position, dt));
+                outputVolts(controller.calculate(target, velocity, target, requestAcceleration, position, dt), c);
                 return;
             case MOTION_MAGIC_VELOCITY: {
-                velocityRamp.maxRate = rampAcceleration;
+                double rate = requestAcceleration > 0 ? requestAcceleration : c.motionMagic.acceleration;
+                // No ramp rate at all means no ramp, not a ramp that never moves.
+                velocityRamp.maxRate = rate > 0 ? rate : Double.MAX_VALUE;
                 double setpoint = velocityRamp.calculate(target, dt);
-                outputVolts(controller.calculate(setpoint, velocity, setpoint, velocityRamp.getRate(), position, dt));
+                outputVolts(controller.calculate(setpoint, velocity, setpoint, velocityRamp.getRate(), position, dt), c);
                 return;
             }
             case POSITION:
-                outputVolts(controller.calculate(target, position, 0, 0, position, dt));
+                outputVolts(controller.calculate(target, position, feedforwardVelocity, 0, position, dt), c);
                 return;
             case MOTION_MAGIC:
                 profileGoal.set(target, 0, 0);
                 TrapezoidProfile.step(dt, profileSetpoint, profileGoal,
-                        motionMagic.cruiseVelocity, motionMagic.acceleration, profileSetpoint);
+                        c.motionMagic.cruiseVelocity, c.motionMagic.acceleration, profileSetpoint);
                 outputVolts(controller.calculate(profileSetpoint.position, position,
-                        profileSetpoint.velocity, profileSetpoint.acceleration, position, dt));
+                        profileSetpoint.velocity, profileSetpoint.acceleration, position, dt), c);
+                return;
+            case COAST:
+                stop(DcMotor.ZeroPowerBehavior.FLOAT, output);
+                return;
+            case BRAKE:
+                stop(DcMotor.ZeroPowerBehavior.BRAKE, output);
                 return;
             default:
-                setZeroPower(neutralRequest != null ? neutralRequest : neutralMode);
-                volts = 0;
-                writePower(0);
+                stop(zeroPower(output.neutralMode), output);
         }
     }
 
-    private void readEncoder() {
+    private void readEncoder(VoltageMotorConfig c) {
         DcMotorEx leader = motors[0];
+        double positionPerTick = c.feedback.positionPerTick;
+        double velocityPerTick = c.feedback.velocityPerTickPerSecond;
         position = leader.getCurrentPosition() * positionPerTick + positionOffset;
-        double velocityScale = Double.isNaN(velocityPerTickPerSecond) ? positionPerTick : velocityPerTickPerSecond;
-        velocity = leader.getVelocity() * velocityScale;
+        velocity = leader.getVelocity() * (Double.isNaN(velocityPerTick) ? positionPerTick : velocityPerTick);
     }
 
-    private void outputVolts(double requested) {
-        setZeroPower(neutralMode);
-        double limited = Math.max(peakReverseVolts, Math.min(peakForwardVolts, requested));
-        if ((limited > 0 && position >= forwardSoftLimit) || (limited < 0 && position <= reverseSoftLimit)) {
-            limited = 0;
-        }
-        volts = limited;
-        writePower(battery.toPower(limited));
+    private void stop(DcMotor.ZeroPowerBehavior behavior, MotorOutputConfig output) {
+        setZeroPower(behavior);
+        volts = 0;
+        writePower(0, output);
+    }
+
+    private void outputVolts(double requested, VoltageMotorConfig c) {
+        MotorOutputConfig output = c.motorOutput;
+        setZeroPower(zeroPower(output.neutralMode));
+        double limited = Math.max(output.peakReverseVolts, Math.min(output.peakForwardVolts, requested));
+        volts = softLimit(limited, c.softLimits);
+        writePower(battery.toPower(volts), output);
     }
 
     // The same peak and soft limits, for duty cycle.
-    private double limitPower(double requested) {
+    private double limitPower(double requested, VoltageMotorConfig c) {
+        MotorOutputConfig output = c.motorOutput;
         double inverseVolts = battery.getInverse();
-        double limited = Math.max(peakReverseVolts * inverseVolts, Math.min(peakForwardVolts * inverseVolts, requested));
-        if ((limited > 0 && position >= forwardSoftLimit) || (limited < 0 && position <= reverseSoftLimit)) {
-            limited = 0;
-        }
-        return Math.max(-1, Math.min(1, limited));
+        double limited = Math.max(output.peakReverseVolts * inverseVolts,
+                Math.min(output.peakForwardVolts * inverseVolts, requested));
+        return Math.max(-1, Math.min(1, softLimit(limited, c.softLimits)));
     }
 
-    private void writePower(double newPower) {
-        boolean small = Math.abs(newPower - power) < powerDeadband;
+    private double softLimit(double output, SoftLimitConfig limits) {
+        if ((output > 0 && position >= limits.forward) || (output < 0 && position <= limits.reverse)) {
+            return 0;
+        }
+        return output;
+    }
+
+    private void writePower(double newPower, MotorOutputConfig output) {
+        boolean small = Math.abs(newPower - power) < output.powerDeadband;
         boolean endpoint = newPower == 0 || Math.abs(newPower) == 1;
         if (newPower == power || (small && !endpoint)) {
             return;
@@ -293,6 +231,10 @@ public class VoltageMotor {
         for (DcMotorEx motor : motors) {
             motor.setPower(power);
         }
+    }
+
+    private static DcMotor.ZeroPowerBehavior zeroPower(NeutralMode mode) {
+        return mode == NeutralMode.COAST ? DcMotor.ZeroPowerBehavior.FLOAT : DcMotor.ZeroPowerBehavior.BRAKE;
     }
 
     // Changing it is a hub command per motor, so only when it changes.
@@ -309,18 +251,19 @@ public class VoltageMotor {
     // ---- State ----
 
     /**
-     * Makes the current spot read as this position, without resetting the encoder (which would cost
-     * a mode change and stop the motors). For homing against a hard stop or a limit switch.
+     * Makes the current spot read as this position, without resetting the encoder (which would
+     * cost a mode change and stop the motors). For homing against a hard stop or a limit switch.
      */
     public void resetPosition(double newPosition) {
-        positionOffset = newPosition - motors[0].getCurrentPosition() * positionPerTick;
+        positionOffset = newPosition - motors[0].getCurrentPosition() * config.feedback.positionPerTick;
         position = newPosition;
         profileSetpoint.set(newPosition, 0, 0);
     }
 
     /**
-     * Whether the position or velocity is within tolerance of the target, for closed loop controls.
-     * Motion Magic also has to have finished its profile.
+     * Whether the position or velocity is within tolerance of the target, for closed loop
+     * controls. Motion Magic also has to have finished its profile. Always false for open loop
+     * and neutral.
      */
     public boolean isAtTarget(double tolerance) {
         switch (mode) {
@@ -337,11 +280,16 @@ public class VoltageMotor {
     }
 
     /** The control running now. */
-    public Mode getMode() {
+    public ControlMode getControlMode() {
         return mode;
     }
 
-    /** The last target set, in position or velocity units. */
+    /** The gain slot in use: 0, 1 or 2. */
+    public int getSlotNumber() {
+        return slot;
+    }
+
+    /** The last request's main value: power, volts, velocity or position. */
     public double getTarget() {
         return target;
     }
@@ -356,24 +304,20 @@ public class VoltageMotor {
         return velocity;
     }
 
-    /**
-     * Where the profile or ramp says the mechanism should be right now.
-     */
+    /** Where the profile says the mechanism should be right now. The target for other controls. */
     public double getSetpointPosition() {
-        return mode == Mode.MOTION_MAGIC ? profileSetpoint.position : target;
+        return mode == ControlMode.MOTION_MAGIC ? profileSetpoint.position : target;
     }
 
     /** The velocity the profile or ramp says the mechanism should have right now. */
     public double getSetpointVelocity() {
-        if (mode == Mode.MOTION_MAGIC) {
+        if (mode == ControlMode.MOTION_MAGIC) {
             return profileSetpoint.velocity;
         }
-        return mode == Mode.MOTION_MAGIC_VELOCITY ? velocityRamp.getValue() : target;
+        return mode == ControlMode.MOTION_MAGIC_VELOCITY ? velocityRamp.getValue() : target;
     }
 
-    /**
-     * The volts asked for after limits, before dividing by the battery.
-     */
+    /** The volts asked for after limits, before dividing by the battery. */
     public double getVolts() {
         return volts;
     }
@@ -383,9 +327,7 @@ public class VoltageMotor {
         return power;
     }
 
-    /**
-     * For settings (StaticSign, gravity type, filters) and for each term on telemetry.
-     */
+    /** The controller, for each term on telemetry while tuning. */
     public PIDSVAController getController() {
         return controller;
     }

@@ -1,16 +1,21 @@
 # API reference
 
-All classes are in `io.github.davidsigreat.volta`. Every public member also has Javadoc, so you can hover over it in Android Studio.
+Every public member also has Javadoc, so you can hover over it in Android Studio.
 
+**`io.github.davidsigreat.volta`**
 - [VoltageMotor](#voltagemotor)
 - [PIDSVAController](#pidsvacontroller)
-- [PIDSVAGains](#pidsvagains)
-- [MotionMagicConfig](#motionmagicconfig)
 - [TrapezoidProfile](#trapezoidprofile)
 - [SlewRateLimiter](#slewratelimiter)
 - [BatteryVoltage](#batteryvoltage)
 
-`BatteryVoltage` and `VoltageMotor` use the FTC SDK. The rest are plain Java and can be unit tested on a computer.
+**`io.github.davidsigreat.volta.controls`**
+- [Control requests](#control-requests)
+
+**`io.github.davidsigreat.volta.configs`**
+- [Configuration classes](#configuration-classes)
+
+`BatteryVoltage` and `VoltageMotor` use the FTC SDK. Everything else is plain Java and can be unit tested on a computer.
 
 ---
 
@@ -19,59 +24,75 @@ All classes are in `io.github.davidsigreat.volta`. Every public member also has 
 One mechanism: a leader motor, its followers, and the control that drives them.
 
 ```java
-VoltageMotor(BatteryVoltage battery, PIDSVAGains gains, DcMotorEx leader, DcMotorEx... followers)
+VoltageMotor(BatteryVoltage battery, VoltageMotorConfig config, DcMotorEx leader, DcMotorEx... followers)
+VoltageMotor(BatteryVoltage battery, DcMotorEx leader, DcMotorEx... followers)   // default config
 ```
 
 The constructor puts every motor in `RUN_WITHOUT_ENCODER`, because the loop runs in Volta, not on the hub. The leader's encoder still reads.
 
-### Controls
-
-| Method | Mode |
-|---|---|
-| `void setDutyCycle(double power)` | `DUTY_CYCLE` |
-| `void setVoltage(double volts)` | `VOLTAGE` |
-| `void setVelocity(double velocity)` | `VELOCITY` |
-| `void setMotionMagicVelocity(double velocity, double acceleration)` | `MOTION_MAGIC_VELOCITY` |
-| `void setPosition(double position)` | `POSITION` |
-| `void setMotionMagic(double position)` | `MOTION_MAGIC` |
-| `void neutral()` | `NEUTRAL`, using `neutralMode` |
-| `void coast()` | `NEUTRAL`, `FLOAT` |
-| `void brake()` | `NEUTRAL`, `BRAKE` |
-
-### Loop and state
-
 | Method | Description |
 |---|---|
+| `void set(ControlRequest request)` | Runs this request from the next `update()` on. Copies its values. |
 | `void update()` | Reads the encoder, runs the control, writes the motors. Once per loop. |
+| `void apply(VoltageMotorConfig config)` | Switches to another configuration, starting fresh |
+| `VoltageMotorConfig getConfig()` | The configuration in use. Edit its fields to change things live. |
 | `void resetPosition(double position)` | Makes the current spot read as `position` |
 | `boolean isAtTarget(double tolerance)` | Within tolerance of the target. Motion Magic also needs the profile finished. Always false for open loop and neutral. |
-| `Mode getMode()` | The current control |
-| `double getTarget()` | The last target |
+| `ControlMode getControlMode()` | The current control |
+| `int getSlotNumber()` | The gain slot in use |
+| `double getTarget()` | The last request's value |
 | `double getPosition()` | Measured position |
 | `double getVelocity()` | Measured velocity |
 | `double getSetpointPosition()` | Profile position (Motion Magic), otherwise the target |
 | `double getSetpointVelocity()` | Profile or ramp velocity, otherwise the target |
 | `double getVolts()` | Volts asked for, after limits |
 | `double getPower()` | Power last written |
-| `PIDSVAController getController()` | The controller, for settings and per-term telemetry |
+| `PIDSVAController getController()` | The controller, for per-term telemetry |
 | `BatteryVoltage getBattery()` | The battery reading |
 
-### Fields
+---
 
-| Field | Type | Default |
-|---|---|---|
-| `positionPerTick` | `double` | 1 |
-| `velocityPerTickPerSecond` | `double` | NaN (uses `positionPerTick`) |
-| `neutralMode` | `DcMotor.ZeroPowerBehavior` | `BRAKE` |
-| `peakForwardVolts` | `double` | +∞ |
-| `peakReverseVolts` | `double` | -∞ |
-| `forwardSoftLimit` | `double` | +∞ |
-| `reverseSoftLimit` | `double` | -∞ |
-| `powerDeadband` | `double` | 0.002 |
-| `maxLoopSeconds` | `double` | 0.1 |
-| `motionMagic` | `MotionMagicConfig` | 0, 0 |
+## Control requests
 
-See [controls](controls.md#motor-settings) for what each one does.
+All extend `ControlRequest`, which has `getControlMode()`, `getValue()`, `getFeedforwardVelocity()`, `getAcceleration()` and `getSlot()`.
+
+| Class | Constructor | Fields and `with...` methods | `ControlMode` |
+|---|---|---|---|
+| `DutyCycleOut` | `(output)` | `output` | `DUTY_CYCLE` |
+| `VoltageOut` | `(output)` | `output` (volts) | `VOLTAGE` |
+| `VelocityVoltage` | `(velocity)` | `velocity`, `acceleration`, `slot` | `VELOCITY` |
+| `MotionMagicVelocityVoltage` | `(velocity)` | `velocity`, `acceleration` (0 uses the config's), `slot` | `MOTION_MAGIC_VELOCITY` |
+| `PositionVoltage` | `(position)` | `position`, `velocity` (feedforward), `slot` | `POSITION` |
+| `MotionMagicVoltage` | `(position)` | `position`, `slot` | `MOTION_MAGIC` |
+| `NeutralOut` | `()` | | `NEUTRAL` |
+| `CoastOut` | `()` | | `COAST` |
+| `StaticBrake` | `()` | | `BRAKE` |
+
+Each field has a matching `with...` method that sets it and returns the request: `withOutput`, `withVelocity`, `withAcceleration`, `withPosition`, `withSlot`.
+
+---
+
+## Configuration classes
+
+See [configuration](configuration.md) for what each setting does.
+
+| Class | Fields |
+|---|---|
+| `VoltageMotorConfig` | `slot0`, `slot1`, `slot2`, `closedLoop`, `feedback`, `motorOutput`, `softLimits`, `motionMagic`, `maxLoopSeconds`; `getSlot(int)` |
+| `SlotConfig` | `kP`, `kI`, `kD`, `kS`, `kV`, `kA`, `kG`, `gravityType`, `staticSign` |
+| `ClosedLoopConfig` | `staticDeadband`, `armHorizontalPosition`, `positionToRadians`, `integralZone`, `maxIntegralVolts`, `derivativeFilter` |
+| `FeedbackConfig` | `positionPerTick`, `velocityPerTickPerSecond` |
+| `MotorOutputConfig` | `neutralMode`, `peakForwardVolts`, `peakReverseVolts`, `powerDeadband` |
+| `SoftLimitConfig` | `forward`, `reverse` |
+| `MotionMagicConfig` | `cruiseVelocity`, `acceleration` |
+
+| Enum | Values |
+|---|---|
+| `GravityType` | `ELEVATOR`, `ARM_COSINE` |
+| `StaticSign` | `VELOCITY`, `ERROR` |
+| `NeutralMode` | `COAST`, `BRAKE` |
+
+Every field is public, and each class has `with...` methods that set fields and return the object, for building a configuration in one expression.
 
 ---
 
@@ -80,7 +101,8 @@ See [controls](controls.md#motor-settings) for what each one does.
 Feedforward + PID in volts. Keeps state (integral, last error), so use one per mechanism.
 
 ```java
-PIDSVAController(PIDSVAGains gains)
+PIDSVAController(SlotConfig slot)
+PIDSVAController(SlotConfig slot, ClosedLoopConfig closedLoop)
 ```
 
 | Method | Description |
@@ -92,50 +114,12 @@ PIDSVAController(PIDSVAGains gains)
 | `double feedforward(velocity, acceleration, position)` | Just the feedforward, for open loop |
 | `double gravity(position)` | Just kG at a position |
 | `void reset()` | Clears the integral and error history |
-| `PIDSVAGains getGains()` | The gains |
+| `getSlot()`, `setSlot(SlotConfig)` | The gains in use. Setting doesn't reset. |
+| `getClosedLoop()`, `setClosedLoop(ClosedLoopConfig)` | The shared settings in use |
 | `getFeedforwardVolts()`, `getGravityVolts()`, `getProportionalVolts()`, `getIntegralVolts()`, `getDerivativeVolts()` | Each term of the last calculation. Feedforward includes gravity. |
 | `double getLastError()` | The last error |
 
-`dt` is in seconds. With `dt <= 0`, the integral and derivative don't update.
-
-| Field | Type | Default |
-|---|---|---|
-| `staticSign` | `StaticSign` (`VELOCITY`, `ERROR`) | `VELOCITY` |
-| `staticDeadband` | `double` | 0 |
-| `integralZone` | `double` | +∞ |
-| `maxIntegralVolts` | `double` | 2 |
-| `derivativeFilter` | `double`, 0 to 1 | 1 (no filter) |
-| `gravityType` | `GravityType` (`ELEVATOR`, `ARM_COSINE`) | `ELEVATOR` |
-| `armHorizontalPosition` | `double` | 0 |
-| `positionToRadians` | `double` | 1 |
-
----
-
-## PIDSVAGains
-
-Seven public `double` fields: `kP`, `kI`, `kD`, `kS`, `kV`, `kA`, `kG`, all in volts.
-
-```java
-PIDSVAGains()                                      // all 0
-PIDSVAGains(kP, kI, kD, kS, kV, kA)                // kG = 0
-PIDSVAGains(kP, kI, kD, kS, kV, kA, kG)
-```
-
-The controller reads the fields every time it calculates, so editing them live (Panels, FTC Dashboard) takes effect on the next loop.
-
----
-
-## MotionMagicConfig
-
-```java
-MotionMagicConfig()                                // 0, 0: jump straight to the goal
-MotionMagicConfig(cruiseVelocity, acceleration)
-```
-
-| Field | Units |
-|---|---|
-| `cruiseVelocity` | position units per second |
-| `acceleration` | position units per second² |
+`dt` is in seconds. With `dt <= 0`, the integral and derivative don't update. The slot and closed loop settings are read every calculation.
 
 ---
 

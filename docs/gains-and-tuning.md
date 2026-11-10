@@ -10,7 +10,7 @@ power = volts / battery voltage
 
 **Feedforward** is what the mechanism needs to follow the plan, worked out ahead of time. **Feedback** fixes whatever the feedforward missed. When the feedforward is good, the feedback has little to do, and the mechanism is fast without overshooting.
 
-Every gain is in **volts**, in the units you set with `positionPerTick`. So kV for a flywheel in RPM is volts per RPM, and kP for an arm in degrees is volts per degree.
+Gains live in a `SlotConfig` (see [configuration](configuration.md#gain-slots)). Every gain is in **volts**, in the units you set in `FeedbackConfig`. So kV for a flywheel in RPM is volts per RPM, and kP for an arm in degrees is volts per degree.
 
 | Gain | Volts per | Covers |
 |---|---|---|
@@ -28,7 +28,7 @@ Tune the feedforward first, then the feedback. Start with every gain at 0.
 
 ### 1. kS and kV
 
-Use `setVoltage()`. Hold each of 4 to 6 voltages, for example 2, 4, 6, 8 and 10 V, for a couple of seconds, and write down the steady velocity at each.
+Use `VoltageOut`. Hold each of 4 to 6 voltages, for example 2, 4, 6, 8 and 10 V, for a couple of seconds, and write down the steady velocity at each.
 
 Fit a straight line through the points: **volts = kS + kV × velocity**. The slope is kV and the intercept is kS.
 
@@ -43,7 +43,7 @@ kG = (V_up + V_down) / 2
 kS = (V_up - V_down) / 2
 ```
 
-**Arm:** the voltage that holds the arm level. Set `gravityType = ARM_COSINE`, `armHorizontalPosition` to the level position, and `positionToRadians` (`Math.PI / 180` for degrees).
+**Arm:** the voltage that holds the arm level. Set the slot's `gravityType` to `ARM_COSINE`, and use `ClosedLoopConfig.withArmHorizontal(levelPosition, Math.PI / 180)` (for degrees).
 
 ### 3. kA (optional)
 
@@ -56,8 +56,8 @@ Leave kA at 0 until everything else works. It matters most for ramps and profile
 With the feedforward on, raise kP until the error is small, stopping before it oscillates. A good starting guess is the volts you'd accept for 1 unit of error.
 
 - **Overshoots or rings?** Add a little kD, or lower kP.
-- **Settles a little short and stays there?** Add a small kI. `maxIntegralVolts` (2 V by default) stops it winding up.
-- **Chatters at the target while holding?** For `setPosition` with `staticSign = ERROR`, raise `staticDeadband`.
+- **Settles a little short and stays there?** Add a small kI. `closedLoop.maxIntegralVolts` (2 V by default) stops it winding up.
+- **Chatters at the target while holding?** For `PositionVoltage` with `staticSign = ERROR`, raise `closedLoop.staticDeadband`.
 
 ### 5. Motion Magic
 
@@ -88,7 +88,7 @@ When it's well tuned, the feedforward carries almost all of it while moving, and
 
 `staticSign = VELOCITY` (default) pushes kS in the direction of the commanded velocity. Use it for velocity control and Motion Magic, where friction opposes the planned motion.
 
-`staticSign = ERROR` pushes kS toward the target. Use it with `setPosition` and no profile, so kS helps the last bit of error break static friction. Set `staticDeadband` so it turns off right at the target.
+`staticSign = ERROR` pushes kS toward the target. Use it with `PositionVoltage` and no profile, so kS helps the last bit of error break static friction. Set `closedLoop.staticDeadband` so it turns off right at the target.
 
 ## Converting old power gains
 
